@@ -42,12 +42,12 @@ def get_ydl_opts(platform: str, output_path: str) -> dict:
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Video Downloader")
+        self.title("TriDL")
         self.geometry("540x420")
         self.resizable(False, False)
 
         # ── Title ──
-        ctk.CTkLabel(self, text="⬇  Video Downloader",
+        ctk.CTkLabel(self, text="⬇  TriDL",
                      font=ctk.CTkFont(size=22, weight="bold")).pack(pady=(30, 4))
         ctk.CTkLabel(self, text="Paste a YouTube, TikTok, or Instagram link",
                      font=ctk.CTkFont(size=13), text_color="gray").pack()
