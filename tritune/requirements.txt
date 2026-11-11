@@ -1,0 +1,3 @@
+aiohttp>=3.9
+yt-dlp[default]
+ytmusicapi>=1.8

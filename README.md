@@ -34,6 +34,13 @@ Get the latest version here:
 
 ---
 
+## 🎧 TriTune (music client)
+
+This repo also contains **TriTune**, a personal desktop music client for Linux that plays from
+YouTube Music and SoundCloud and imports Spotify playlists. See [tritune/README.md](tritune/README.md).
+
+---
+
 ## ⚠️ Disclaimer
 
 This tool is intended for educational and personal use only.

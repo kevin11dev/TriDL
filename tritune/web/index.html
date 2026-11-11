@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TriTune</title>
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="nav">
+      <button class="round" id="back" title="Go back"></button>
+      <button class="round" id="fwd" title="Go forward"></button>
+    </div>
+    <div class="center">
+      <a class="round big" id="home" href="#/home" title="Home"></a>
+      <label id="searchbox">
+        <span class="ico" id="search-ico"></span>
+        <input id="q" type="search" placeholder="What do you want to play?" autocomplete="off" spellcheck="false">
+      </label>
+    </div>
+    <div class="brand">TriTune</div>
+  </header>
+
+  <aside id="sidebar">
+    <div class="side-head">
+      <span class="side-title"><span class="ico" id="lib-ico"></span>Your Library</span>
+      <span>
+        <button class="round ghost" id="import" title="Import a Spotify / YouTube Music / SoundCloud playlist"></button>
+        <button class="round ghost" id="new-pl" title="Create playlist"></button>
+      </span>
+    </div>
+    <nav id="lib"></nav>
+  </aside>
+
+  <main id="main" tabindex="-1"></main>
+
+  <aside id="queue" hidden>
+    <div class="side-head"><span class="side-title">Queue</span>
+      <button class="round ghost" id="queue-close" title="Close"></button></div>
+    <div id="queue-list"></div>
+  </aside>
+
+  <footer id="player">
+    <div class="now">
+      <img id="np-art" alt="" hidden>
+      <div class="np-text">
+        <a id="np-title" class="np-title"></a>
+        <a id="np-artist" class="np-artist"></a>
+      </div>
+      <button class="icon-btn" id="np-like" title="Save to Liked Songs" hidden></button>
+    </div>
+    <div class="controls">
+      <div class="buttons">
+        <button class="icon-btn" id="shuffle" title="Shuffle"></button>
+        <button class="icon-btn" id="prev" title="Previous"></button>
+        <button class="play-btn" id="play" title="Play"></button>
+        <button class="icon-btn" id="next" title="Next"></button>
+        <button class="icon-btn" id="repeat" title="Repeat"></button>
+      </div>
+      <div class="seek">
+        <span id="cur">0:00</span>
+        <input type="range" id="seek" class="slider" min="0" max="1000" value="0" aria-label="Seek">
+        <span id="dur">0:00</span>
+      </div>
+    </div>
+    <div class="extra">
+      <button class="icon-btn" id="autoplay" title="Autoplay similar songs when the queue ends"></button>
+      <button class="icon-btn" id="queue-btn" title="Queue"></button>
+      <button class="icon-btn" id="mute" title="Mute"></button>
+      <input type="range" id="vol" class="slider" min="0" max="100" value="80" aria-label="Volume">
+    </div>
+  </footer>
+</div>
+
+<div id="menu" hidden></div>
+<div id="modal" hidden>
+  <form id="modal-box">
+    <h3 id="modal-title"></h3>
+    <p id="modal-text"></p>
+    <input id="modal-input" autocomplete="off" spellcheck="false">
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" id="modal-cancel">Cancel</button>
+      <button type="submit" class="btn" id="modal-ok">OK</button>
+    </div>
+  </form>
+</div>
+<div id="toasts"></div>
+<audio id="audio" preload="auto"></audio>
+<script src="app.js"></script>
+</body>
+</html>
