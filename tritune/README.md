@@ -25,6 +25,9 @@ adds a launcher + app-menu entry.
 Re-run `./install.sh` any time to update — do this first if playback stops
 working, since YouTube changes often and yt-dlp has to keep up.
 
+**If the window stays blank or black** (usually a graphics driver issue), start it
+with `tritune --safe-graphics`.
+
 **If a song won't play**, the red message shows the reason, and the full log is in
 `~/.cache/tritune/tritune.log`.
 

@@ -18,6 +18,7 @@ from .library import Library
 from .player import Player
 
 log = logging.getLogger("tritune")
+on_raise = None   # set by window.py: brings the app window to the front
 WEB_DIR = Path(__file__).parent / "web"
 
 
@@ -115,7 +116,13 @@ def make_app() -> web.Application:
         return web.FileResponse(WEB_DIR / "index.html")
 
     async def ping(_):
-        return web.json_response({"app": "tritune"})
+        return web.json_response({"app": "tritune", "pid": os.getpid(), "window": on_raise is not None})
+
+    async def raise_window(_):
+        if on_raise is None:
+            raise web.HTTPNotFound()
+        on_raise()
+        return ok()
 
     # ── discovery ──
     async def search(req):
@@ -252,6 +259,7 @@ def make_app() -> web.Application:
 
     r.add_get("/", index)
     r.add_get("/api/ping", ping)
+    r.add_post("/api/raise", raise_window)
     r.add_get("/api/search", search)
     r.add_get("/api/album/{id}", album)
     r.add_get("/api/artist/{id}", artist)
