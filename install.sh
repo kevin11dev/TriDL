@@ -1,30 +1,37 @@
 #!/usr/bin/env bash
 # TriTune installer for CachyOS / Arch Linux.
-#   ./install.sh            install or update (re-run any time to update yt-dlp)
-#   ./install.sh --webview  also install a native Qt window (pywebview) instead
-#                           of using a Chromium-based browser in app mode
+# Re-run any time to update (do this first if playback ever stops working).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 ROOT=$PWD
 
-# System packages: ffmpeg for some SoundCloud streams, deno for yt-dlp's YouTube support.
-missing=()
-for cmd in python ffmpeg deno; do command -v "$cmd" >/dev/null || missing+=("$cmd"); done
-if ((${#missing[@]})); then
-  if command -v pacman >/dev/null; then
+# System packages:
+#   mpv            native audio engine        deno   needed by yt-dlp for YouTube
+#   pyside6 + qt6-webengine   the application window
+if command -v pacman >/dev/null; then
+  missing=()
+  for pkg in python mpv deno pyside6 qt6-webengine; do
+    pacman -Qq "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  if ((${#missing[@]})); then
     echo "Installing system packages: ${missing[*]}"
     sudo pacman -S --needed "${missing[@]}"
-  else
-    echo "Please install: ${missing[*]}" >&2
   fi
+else
+  command -v mpv >/dev/null || echo "Please install mpv with your package manager." >&2
 fi
 
+# The venv can see system packages (PySide6 from pacman); recreate older venvs that cannot.
 PY=$(command -v python || command -v python3)
-[ -d .venv ] || "$PY" -m venv .venv
+if [ -f .venv/pyvenv.cfg ] && ! grep -q "include-system-site-packages = true" .venv/pyvenv.cfg; then
+  rm -rf .venv
+fi
+[ -d .venv ] || "$PY" -m venv --system-site-packages .venv
 .venv/bin/pip install --quiet --upgrade pip
 .venv/bin/pip install --quiet --upgrade -r tritune/requirements.txt
-if [[ "${1:-}" == "--webview" ]]; then
-  .venv/bin/pip install --quiet --upgrade "pywebview[qt]"
+if ! .venv/bin/python -c "import PySide6.QtWebEngineWidgets" 2>/dev/null; then
+  echo "Installing PySide6 into the venv (large download)..."
+  .venv/bin/pip install --quiet --upgrade PySide6
 fi
 
 BIN=$HOME/.local/bin
@@ -47,7 +54,7 @@ Exec=$BIN/tritune
 Icon=tritune
 Terminal=false
 Categories=AudioVideo;Audio;Player;
-StartupWMClass=TriTune
+StartupWMClass=tritune
 DESKTOP
 
 echo "Done. Start TriTune from your app menu, or run: tritune"

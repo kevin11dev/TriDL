@@ -231,19 +231,19 @@ def import_playlist(url: str) -> dict:
 
 # ── stream resolution ───────────────────────────────────────────────────
 
-def resolve(track_id: str) -> dict:
-    """Resolve a track id into a playable audio URL."""
+def page_url(track_id: str) -> str:
+    """The public page of a track (also validates the id)."""
     source, _, rid = track_id.partition(":")
     if source == "ytm" and _YTM_ID.match(rid):
-        page = f"https://music.youtube.com/watch?v={rid}"
-        fmt = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best"
-    elif source == "sc" and _SC_ID.match(rid):
-        page = f"https://api.soundcloud.com/tracks/{rid}"
-        fmt = "bestaudio[protocol^=http]/bestaudio/best"
-    else:
-        raise ValueError(f"bad track id: {track_id}")
+        return f"https://www.youtube.com/watch?v={rid}"
+    if source == "sc" and _SC_ID.match(rid):
+        return f"https://api.soundcloud.com/tracks/{rid}"
+    raise ValueError(f"bad track id: {track_id}")
 
-    info = _ydl(fmt=fmt).extract_info(page, download=False)
+
+def resolve(track_id: str) -> dict:
+    """Resolve a track id into a direct audio stream URL (played by mpv)."""
+    info = _ydl(fmt="bestaudio/best").extract_info(page_url(track_id), download=False)
     url = info.get("url")
     if not url:
         raise RuntimeError("no playable audio stream found")
@@ -253,10 +253,4 @@ def resolve(track_id: str) -> dict:
         expires = min(time.time() + 6 * 3600, int(parse_qs(urlparse(url).query)["expire"][0]))
     except (KeyError, ValueError, IndexError):
         pass
-    return {
-        "url": url,
-        "headers": dict(info.get("http_headers") or {}),
-        "ext": info.get("ext") or "",
-        "hls": str(info.get("protocol") or "").startswith("m3u8"),
-        "expires": expires - 120,
-    }
+    return {"url": url, "headers": dict(info.get("http_headers") or {}), "expires": expires - 120}

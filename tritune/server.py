@@ -1,10 +1,11 @@
-"""Local HTTP server: JSON API, audio stream proxy and the web UI."""
+"""In-process backend for the app window: JSON API, player control and UI files."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
-import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,10 +15,10 @@ from aiohttp import web
 
 from . import providers, spotify
 from .library import Library
+from .player import Player
 
+log = logging.getLogger("tritune")
 WEB_DIR = Path(__file__).parent / "web"
-HLS_CACHE_LIMIT = 512 * 1024 * 1024
-_EXT = {"opus": "ogg", "m4a": "m4a", "mp3": "mp3", "aac": "m4a"}
 
 
 def data_dir() -> Path:
@@ -55,49 +56,11 @@ class Resolver:
 
     async def _resolve(self, tid: str) -> dict:
         info = await self.run(providers.resolve, tid)
-        if info.get("hls"):
-            info["file"] = await self._remux(tid, info)
-            info["expires"] = time.time() + 30 * 86400
         self.cache[tid] = info
         if len(self.cache) > 500:
             now = time.time()
             self.cache = {k: v for k, v in self.cache.items() if v["expires"] > now}
         return info
-
-    async def _remux(self, tid: str, info: dict) -> str:
-        """HLS-only streams (some SoundCloud tracks) are remuxed to a seekable file."""
-        folder = cache_dir() / "hls"
-        folder.mkdir(exist_ok=True)
-        out = folder / f"{tid.replace(':', '_')}.{_EXT.get(info['ext'], 'mka')}"
-        if out.exists():
-            return str(out)
-        if not shutil.which("ffmpeg"):
-            raise RuntimeError("this track needs ffmpeg (sudo pacman -S ffmpeg)")
-        tmp = out.with_name("tmp_" + out.name)
-        heads = "".join(f"{k}: {v}\r\n" for k, v in info["headers"].items())
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-loglevel", "error", "-headers", heads, "-i", info["url"],
-            "-vn", "-c", "copy", str(tmp),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-        _, err = await proc.communicate()
-        if proc.returncode != 0:
-            tmp.unlink(missing_ok=True)
-            raise RuntimeError("ffmpeg failed: " + err.decode(errors="replace")[-300:])
-        tmp.rename(out)
-        return str(out)
-
-
-def trim_hls_cache():
-    folder = cache_dir() / "hls"
-    if not folder.is_dir():
-        return
-    files = sorted((f for f in folder.iterdir() if f.is_file()), key=lambda f: f.stat().st_mtime)
-    total = sum(f.stat().st_size for f in files)
-    for f in files:
-        if total <= HLS_CACHE_LIMIT:
-            break
-        total -= f.stat().st_size
-        f.unlink(missing_ok=True)
 
 
 # ── middleware ──────────────────────────────────────────────────────────
@@ -106,7 +69,8 @@ def trim_hls_cache():
 async def guard(request: web.Request, handler):
     # Only answer requests addressed to localhost (blocks DNS-rebinding pages).
     host = request.host.rsplit(":", 1)[0]
-    if host not in ("127.0.0.1", "localhost"):
+    origin = request.headers.get("Origin")
+    if host not in ("127.0.0.1", "localhost") or (origin and origin.split("//")[-1] != request.host):
         return web.Response(status=403, text="forbidden")
     try:
         resp = await handler(request)
@@ -131,13 +95,13 @@ def make_app() -> web.Application:
         return await asyncio.get_running_loop().run_in_executor(pool, fn, *args)
 
     resolver = Resolver(run)
+    player = Player(resolver)
 
     async def on_start(app):
-        app["http"] = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=None, connect=15, sock_read=30))
-        trim_hls_cache()
+        app["http"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
 
     async def on_stop(app):
+        player.close()
         await app["http"].close()
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -177,40 +141,43 @@ def make_app() -> web.Application:
         await resolver.get(req.match_info["tid"])
         return ok()
 
-    async def stream(req):
-        tid = req.match_info["tid"]
-        up = None
-        for attempt in (0, 1):
-            info = await resolver.get(tid, force=attempt == 1)
-            if info.get("file"):
-                if os.path.exists(info["file"]):
-                    return web.FileResponse(info["file"])
-                continue
-            headers = dict(info["headers"])
-            if "Range" in req.headers:
-                headers["Range"] = req.headers["Range"]
-            up = await app["http"].get(info["url"], headers=headers)
-            if up.status < 400:
-                break
-            up.close()
-            up = None
-        if up is None:
-            raise web.HTTPBadGateway(text="stream unavailable")
+    async def player_ws(req):
+        ws = web.WebSocketResponse(heartbeat=30)
+        await ws.prepare(req)
+        queue: asyncio.Queue = asyncio.Queue()
+        player.listeners.add(queue.put_nowait)
 
-        resp = web.StreamResponse(status=up.status)
-        for h in ("Content-Type", "Content-Length", "Content-Range"):
-            if h in up.headers:
-                resp.headers[h] = up.headers[h]
-        resp.headers["Accept-Ranges"] = "bytes"
+        async def sender():
+            while True:
+                await ws.send_json(await queue.get())
+
+        async def handle(d):
+            try:
+                cmd = d.get("cmd")
+                if cmd == "load":
+                    await player.load(d["track"], d.get("at") or 0, d.get("play", True))
+                elif cmd == "pause":
+                    await player.set_pause(d["value"])
+                elif cmd == "seek":
+                    await player.seek(d["time"])
+                elif cmd == "volume":
+                    await player.set_volume(d["value"])
+                elif cmd == "mute":
+                    await player.set_mute(d["value"])
+            except Exception as e:
+                log.exception("player command failed")
+                player.fail(str(e))
+
+        task = asyncio.ensure_future(sender())
+        queue.put_nowait({"ev": "state", **player.state})
         try:
-            await resp.prepare(req)
-            async for chunk in up.content.iter_chunked(64 * 1024):
-                await resp.write(chunk)
-        except (ConnectionError, aiohttp.ClientError, asyncio.TimeoutError):
-            pass  # listener skipped / seeked away, or upstream dropped
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    asyncio.ensure_future(handle(json.loads(msg.data)))
         finally:
-            up.close()
-        return resp
+            player.listeners.discard(queue.put_nowait)
+            task.cancel()
+        return ws
 
     # ── library ──
     async def library(_):
@@ -290,7 +257,7 @@ def make_app() -> web.Application:
     r.add_get("/api/artist/{id}", artist)
     r.add_post("/api/radio", radio)
     r.add_get("/api/prefetch/{tid}", prefetch)
-    r.add_get("/api/stream/{tid}", stream)
+    r.add_get("/api/player", player_ws)
     r.add_get("/api/library", library)
     r.add_get("/api/likes", likes)
     r.add_post("/api/likes", like)

@@ -17,15 +17,16 @@ cd TriDL
 
 Then start **TriTune** from your app menu, or run `tritune`.
 
-The installer creates a Python venv in the repo, installs `ffmpeg` and `deno` with
-pacman if missing (yt-dlp needs deno for YouTube), and adds a launcher + desktop
-entry. Re-run `./install.sh` any time to update — do this first if playback stops
+TriTune is a native desktop app: its own Qt window, with audio played by **mpv**
+(no browser involved). The installer adds `mpv`, `deno`, `pyside6` and
+`qt6-webengine` with pacman if missing, creates a Python venv in the repo, and
+adds a launcher + app-menu entry.
+
+Re-run `./install.sh` any time to update — do this first if playback stops
 working, since YouTube changes often and yt-dlp has to keep up.
 
-**Window:** by default TriTune opens in a Chromium-based browser's app mode
-(Chromium, Brave, Chrome, Vivaldi, Edge) with its own profile. With none installed
-it opens a tab in your default browser. For a native Qt window instead, run
-`./install.sh --webview`.
+**If a song won't play**, the red message shows the reason, and the full log is in
+`~/.cache/tritune/tritune.log`.
 
 ## Features
 
@@ -35,7 +36,7 @@ it opens a tab in your default browser. For a native Qt window instead, run
 - Import playlists/albums from Spotify, YouTube Music, YouTube and SoundCloud links
 - Queue, shuffle, repeat, autoplay of similar songs when the queue ends
 - Next track is resolved ahead of time, so skipping is instant
-- Media keys / desktop media controls (MPRIS, via the browser engine)
+- Play/pause from desktop media controls if `mpv-mpris` is installed (`sudo pacman -S mpv-mpris`)
 - Restores your queue and position on restart
 
 | Shortcut | Action |
@@ -57,21 +58,21 @@ each song on YouTube Music. Limits: the link must be public, and only the first
 
 ## How it works
 
-`python -m tritune` starts a small local server on `127.0.0.1:47600`
-(aiohttp) and opens the UI (plain HTML/CSS/JS, no build step).
+`python -m tritune` opens the window and runs a small backend inside the same process.
 
+- `window.py` — the Qt window (PySide6 / QtWebEngine renders the interface)
+- `player.py` — audio playback through an `mpv` process (JSON IPC); tries the
+  stream URL resolved by yt-dlp first, then mpv's own yt-dlp hook as a fallback
 - `providers.py` — search/browse via `ytmusicapi`, stream resolution via `yt-dlp`
-- `server.py` — JSON API + audio proxy with Range support (seeking), URL cache
+- `server.py` — internal API between the window and the backend (localhost only)
 - `spotify.py` — reads public Spotify links
 - `library.py` — SQLite library in `~/.local/share/tritune/library.db`
-
-Options: `tritune --port 47600 --window auto|webview|app|browser|none`
 
 ## Tests
 
 ```bash
 .venv/bin/python -m unittest tests.test_core     # offline unit tests
-.venv/bin/python -m tests.mock_app 47990         # UI with fake sources, no network
+.venv/bin/python -m tests.mock_app 47990         # backend with fake sources, no network
 ```
 
 ## Disclaimer

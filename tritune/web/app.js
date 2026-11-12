@@ -54,7 +54,55 @@ const fail = e => toast(e.message || String(e), true);
 
 // ── state ────────────────────────────────────────────────────────────────
 const S = { queue: [], idx: -1, shuffle: false, repeat: 'off', autoplay: true, liked: new Set(), playlists: [] };
-const audio = $('#audio');
+// Playback happens natively in mpv (see player.py). This object mirrors the
+// small part of the HTMLAudioElement interface the UI uses, over a WebSocket.
+const audio = (() => {
+  const L = {}, st = { tid: null, paused: true, time: 0, duration: 0, loading: false, volume: .8, muted: false };
+  let ws, backlog = [], error = '';
+  const emit = n => (L[n] || []).forEach(f => f());
+  const send = o => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else backlog.push(o); };
+  function onMessage(m) {
+    if (m.ev === 'state') {
+      if (!m.tid || (st.tid && m.tid !== st.tid)) return;   // nothing loaded, or a stale track
+      const was = { ...st };
+      Object.assign(st, { tid: m.tid, paused: m.paused, time: m.time, loading: m.loading, duration: m.duration || st.duration });
+      if (st.duration !== was.duration) emit('loadedmetadata');
+      if (st.loading !== was.loading) emit(st.loading ? 'waiting' : 'canplay');
+      if (st.paused !== was.paused) emit(st.paused ? 'pause' : 'play');
+      if (!st.loading && !st.paused && (was.loading || was.paused)) emit('playing');
+      emit('timeupdate');
+    } else if (m.tid === st.tid && (m.ev === 'ended' || m.ev === 'error')) {
+      Object.assign(st, { tid: null, paused: true, loading: false });
+      error = m.msg || '';
+      emit(m.ev);
+    }
+  }
+  (function connect() {
+    ws = new WebSocket(`ws://${location.host}/api/player`);
+    ws.onopen = () => { send({ cmd: 'volume', value: st.volume }); send({ cmd: 'mute', value: st.muted }); backlog.splice(0).forEach(send); };
+    ws.onmessage = e => onMessage(JSON.parse(e.data));
+    ws.onclose = () => setTimeout(connect, 1000);
+  })();
+  return {
+    addEventListener(n, f) { (L[n] ||= []).push(f); },
+    load(track, at = 0, play = true) {
+      Object.assign(st, { tid: track.id, paused: !play, time: at, duration: track.duration || 0, loading: true });
+      send({ cmd: 'load', track, at, play });
+    },
+    play() { if (st.tid) { st.paused = false; send({ cmd: 'pause', value: false }); emit('play'); } },
+    pause() { if (st.tid) { st.paused = true; send({ cmd: 'pause', value: true }); emit('pause'); } },
+    get src() { return st.tid || ''; },          // id of the track mpv has loaded
+    get error() { return error; },
+    get paused() { return st.paused; },
+    get duration() { return st.duration; },
+    get currentTime() { return st.time; },
+    set currentTime(v) { if (st.tid) { st.time = v; send({ cmd: 'seek', time: v }); emit('timeupdate'); } },
+    get volume() { return st.volume; },
+    set volume(v) { st.volume = v; send({ cmd: 'volume', value: v }); },
+    get muted() { return st.muted; },
+    set muted(v) { st.muted = v; send({ cmd: 'mute', value: v }); },
+  };
+})();
 let lists = [];           // track lists rendered in the current view
 let renderToken = 0;
 const cur = () => S.queue[S.idx];
@@ -78,15 +126,15 @@ function loadState() {
 }
 
 // ── player ───────────────────────────────────────────────────────────────
-let errors = 0, seeking = false, resumeAt = 0, loadedId = null;
+let errors = 0, seeking = false, resumeAt = 0;
 const prefetched = new Set();
 
 function loadTrack(play = true, at = 0) {
   const t = cur();
   if (!t) return;
-  loadedId = t.id; resumeAt = at;
-  audio.src = '/api/stream/' + enc(t.id);
-  if (play) { setLoading(true); audio.play().catch(() => { }); }
+  resumeAt = 0;
+  audio.load(t, at, play);
+  if (play) setLoading(true);
   updateNow();
   if (play) api('history', { method: 'POST', body: t }).catch(() => { });
   if (S.autoplay && S.repeat === 'off' && S.idx >= S.queue.length - 1) extendRadio(t);
@@ -104,11 +152,11 @@ function playList(tracks, i = 0) {
 }
 function toggle() {
   if (!cur()) return;
-  if (loadedId !== cur().id || !audio.src) return loadTrack(true, resumeAt);
-  audio.paused ? audio.play().catch(() => { }) : audio.pause();
+  if (audio.src !== cur().id) return loadTrack(true, resumeAt);
+  audio.paused ? audio.play() : audio.pause();
 }
 function next(auto) {
-  if (auto && S.repeat === 'one') { audio.currentTime = 0; audio.play(); return; }
+  if (auto && S.repeat === 'one') { loadTrack(true); return; }
   if (S.idx + 1 < S.queue.length) playAt(S.idx + 1);
   else if (S.repeat !== 'off' && S.queue.length) playAt(0);
   else if (auto) { setLoading(false); updatePlayBtn(); }
@@ -162,12 +210,6 @@ function updateNow() {
     $('#np-like').innerHTML = likeIcon(t.id); $('#np-like').classList.toggle('on', S.liked.has(t.id));
     $('#dur').textContent = fmt(t.duration);
     document.title = `${t.title} • ${t.artist}`;
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: t.title, artist: t.artist, album: t.album || '',
-        artwork: t.thumb ? [{ src: big(t.thumb), sizes: '512x512' }] : [],
-      });
-    }
   }
   $$('.row.playing, .qrow.playing').forEach(r => r.classList.remove('playing'));
   if (t) $$(`.row[data-tid="${CSS.escape(t.id)}"]`).forEach(r => r.classList.add('playing'));
@@ -176,7 +218,7 @@ function updateNow() {
 function setSlider(el, frac) { el.style.setProperty('--p', (Math.min(1, Math.max(0, frac)) * 100) + '%'); }
 function duration() { return isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (cur()?.duration || 0); }
 
-audio.addEventListener('loadedmetadata', () => { if (resumeAt) { audio.currentTime = resumeAt; resumeAt = 0; } $('#dur').textContent = fmt(duration()); });
+audio.addEventListener('loadedmetadata', () => { $('#dur').textContent = fmt(duration()); });
 audio.addEventListener('playing', () => { errors = 0; setLoading(false); prefetchNext(); });
 audio.addEventListener('waiting', () => setLoading(true));
 audio.addEventListener('canplay', () => setLoading(false));
@@ -184,10 +226,9 @@ audio.addEventListener('play', updatePlayBtn);
 audio.addEventListener('pause', updatePlayBtn);
 audio.addEventListener('ended', () => next(true));
 audio.addEventListener('error', () => {
-  if (!audio.getAttribute('src')) return;
   setLoading(false);
   const t = cur();
-  toast(`Can't play "${t ? t.title : 'track'}"`, true);
+  toast(`Can't play "${t ? t.title : 'track'}"` + (audio.error ? ': ' + audio.error.slice(0, 300) : ''), true);
   if (++errors < 3 && S.idx + 1 < S.queue.length) next(); else errors = 0;
 });
 let lastSave = 0;
@@ -202,7 +243,7 @@ $('#seek').addEventListener('input', e => { seeking = true; setSlider(e.target, 
 $('#seek').addEventListener('change', e => {
   seeking = false;
   const at = e.target.value / 1000 * duration();
-  if (loadedId === cur()?.id && audio.src) audio.currentTime = at; else resumeAt = at;
+  if (audio.src === cur()?.id) audio.currentTime = at; else resumeAt = at;
 });
 function updateVol() {
   const v = audio.muted ? 0 : audio.volume;
@@ -232,13 +273,6 @@ $('#shuffle').onclick = () => {
 $('#repeat').onclick = () => { S.repeat = { off: 'all', all: 'one', one: 'off' }[S.repeat]; updateModes(); saveState(); };
 $('#autoplay').onclick = () => { S.autoplay = !S.autoplay; updateModes(); saveState(); toast('Autoplay ' + (S.autoplay ? 'on' : 'off')); };
 $('#np-like').onclick = () => cur() && toggleLike(cur());
-if ('mediaSession' in navigator) {
-  const ms = navigator.mediaSession;
-  ms.setActionHandler('play', toggle); ms.setActionHandler('pause', toggle);
-  ms.setActionHandler('nexttrack', () => next(false)); ms.setActionHandler('previoustrack', prev);
-  ms.setActionHandler('seekto', e => { audio.currentTime = e.seekTime; });
-}
-
 // ── queue panel ──────────────────────────────────────────────────────────
 function qrow(t, i) {
   return `<div class="qrow${i === S.idx ? ' playing' : ''}" data-q="${i}"><img loading="lazy" src="${esc(t.thumb || 'icon.svg')}" alt="">
@@ -514,12 +548,12 @@ main.addEventListener('click', async e => {
   const act = actEl.dataset.act, row = e.target.closest('[data-l][data-i]');
   const list = row ? lists[row.dataset.l] : null, t = list ? list[row.dataset.i] : null;
   if (act === 'play' && t) {
-    if (cur() && cur().id === t.id && loadedId === t.id && actEl.tagName === 'BUTTON') toggle(); else playList(list, +row.dataset.i);
+    if (cur() && cur().id === t.id && audio.src === t.id && actEl.tagName === 'BUTTON') toggle(); else playList(list, +row.dataset.i);
   } else if (act === 'like' && t) toggleLike(t);
   else if (act === 'more' && t) { const b = actEl.getBoundingClientRect(); trackMenu(t, b.left - 200, b.bottom + 4, row); }
   else if (act === 'play-all') {
     const l = mainList();
-    if (cur() && l.some(x => x.id === cur().id) && loadedId === cur().id) toggle(); else playList(l, 0);
+    if (cur() && l.some(x => x.id === cur().id) && audio.src === cur().id) toggle(); else playList(l, 0);
   } else if (act === 'save-album' && VIEWS._album) {
     const a = VIEWS._album;
     try { await api('playlists', { method: 'POST', body: { name: a.title, tracks: a.tracks } }); await refreshLibrary(); toast('Saved to Your Library'); } catch (err) { fail(err); }
@@ -568,6 +602,8 @@ document.addEventListener('keydown', e => {
   else if (e.key.toLowerCase() === 'q' && !e.ctrlKey) toggleQueue();
 });
 window.addEventListener('beforeunload', saveState);
+// No browser context menu anywhere: this is an app window, not a web page.
+document.addEventListener('contextmenu', e => { if (!/INPUT|TEXTAREA/.test(e.target.tagName)) e.preventDefault(); });
 
 // ── boot ─────────────────────────────────────────────────────────────────
 for (const [id, ic] of Object.entries({ back: 'back', fwd: 'fwd', home: 'home', 'search-ico': 'search', 'lib-ico': 'library', import: 'down', 'new-pl': 'plus', 'queue-close': 'close', shuffle: 'shuffle', prev: 'prev', next: 'next', autoplay: 'radio', 'queue-btn': 'queue' })) $('#' + id).innerHTML = svg(ic);

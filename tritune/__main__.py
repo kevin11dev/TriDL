@@ -1,21 +1,18 @@
-"""Launcher: starts the local server and opens the TriTune window."""
+"""Launcher: starts the in-process backend and opens the native TriTune window."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import shutil
-import subprocess
+import importlib
+import logging
 import sys
 import threading
 import urllib.request
 
 from aiohttp import web
 
-from .server import data_dir, make_app
-
-BROWSERS = ("chromium", "google-chrome-stable", "google-chrome", "brave", "brave-browser",
-            "vivaldi-stable", "vivaldi", "microsoft-edge-stable", "thorium-browser")
+from .server import cache_dir, data_dir, make_app
 
 
 def already_running(url: str) -> bool:
@@ -26,45 +23,26 @@ def already_running(url: str) -> bool:
         return False
 
 
-def open_window(url: str, mode: str) -> bool:
-    """Show the UI. Returns False if nothing blocks (plain browser tab)."""
-    if mode in ("auto", "webview"):
-        try:
-            import webview  # optional: pip install "pywebview[qt]"
-
-            webview.create_window("TriTune", url, width=1280, height=820,
-                                  min_size=(820, 560), background_color="#000000")
-            webview.start()
-            return True
-        except ImportError:
-            if mode == "webview":
-                sys.exit("pywebview is not installed (run ./install.sh --webview)")
-    if mode in ("auto", "app"):
-        exe = next((p for b in BROWSERS if (p := shutil.which(b))), None)
-        if exe:
-            subprocess.run([exe, f"--app={url}", f"--user-data-dir={data_dir() / 'window'}",
-                            "--class=TriTune", "--no-first-run", "--no-default-browser-check",
-                            "--autoplay-policy=no-user-gesture-required", "--window-size=1280,820"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
-        if mode == "app":
-            sys.exit("no Chromium-based browser found")
-    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return False
-
-
 def main():
     ap = argparse.ArgumentParser(prog="tritune", description="Personal music client")
-    ap.add_argument("--port", type=int, default=47600)
-    ap.add_argument("--window", choices=("auto", "webview", "app", "browser", "none"), default="auto",
-                    help="auto: pywebview if installed, else a Chromium app window, else browser tab")
+    ap.add_argument("--port", type=int, default=47600, help="internal port used by the app window")
+    ap.add_argument("--no-window", action="store_true", help="run only the backend (for debugging)")
     args = ap.parse_args()
     url = f"http://127.0.0.1:{args.port}"
 
+    log_file = cache_dir() / "tritune.log"
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        handlers=[logging.FileHandler(log_file, mode="w"), logging.StreamHandler()])
+
     if already_running(url):
-        if args.window != "none":
-            open_window(url, args.window)
-        return
+        sys.exit("TriTune is already running.")
+
+    if not args.no_window:
+        try:
+            importlib.import_module("PySide6.QtWebEngineWidgets")
+        except ImportError as e:
+            sys.exit(f"The app window needs PySide6 with QtWebEngine ({e}).\n"
+                     "Run ./install.sh, or: sudo pacman -S pyside6 qt6-webengine")
 
     loop = asyncio.new_event_loop()
     ready = threading.Event()
@@ -82,7 +60,7 @@ def main():
             return
         ready.set()
         loop.run_forever()
-        loop.run_until_complete(runner.cleanup())
+        loop.run_until_complete(runner.cleanup())   # also stops mpv
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
@@ -90,16 +68,20 @@ def main():
     if failed:
         sys.exit(f"could not start on port {args.port}: {failed[0]}")
 
-    print(f"TriTune running at {url}")
+    code = 0
     try:
-        if args.window == "none" or not open_window(url, args.window):
-            print("Press Ctrl+C to quit.")
+        if args.no_window:
+            print(f"TriTune backend running at {url} - press Ctrl+C to quit.")
             thread.join()
+        else:
+            from .window import run
+            code = run(url, data_dir() / "qt")
     except KeyboardInterrupt:
         pass
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=3)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

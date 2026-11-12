@@ -47,8 +47,10 @@ def main(port):
     app = server.make_app()
     app["port"] = port
     app.on_startup.append(start_upstream)
-    providers.resolve = lambda tid: {"url": f"http://127.0.0.1:{port + 1}/upstream.wav", "headers": {},
-                                     "ext": "wav", "hls": False, "expires": 9e12}
+    # ids ending in 3 have a broken stream URL (exercises the fallback + error path)
+    providers.resolve = lambda tid: {
+        "url": f"http://127.0.0.1:{port + 1}/" + ("missing" if tid.endswith("3") else "upstream.wav"),
+        "headers": {"User-Agent": "tritune-test", "X-Test": "1"}, "expires": 9e12}
     web.run_app(app, host="127.0.0.1", port=port, print=None)
 
 
